@@ -231,27 +231,46 @@ Faites preuve de pédagogie et soyez clair dans vos explications et procedures d
 **Exercice 1 :**  
 Quels sont les composants dont la perte entraîne une perte de données ?  
   
-*..Répondez à cet exercice ici..*
+Les composants dont la perte entraîne une perte de données sont :
+
+Le PVC pra-data : c'est le volume persistant qui contient la base de données SQLite en production. Si ce PVC est supprimé sans backup disponible, toutes les données sont perdues définitivement.
+Le PVC pra-backup : c'est le volume qui contient les sauvegardes automatiques. Si ce PVC est supprimé, on perd tous les points de restauration et il devient impossible de récupérer les données après un sinistre sur pra-data.
+Le CronJob sqlite-backup : si le CronJob est désactivé ou en erreur pendant une longue période, les sauvegardes ne se font plus. En cas de sinistre sur pra-data, on ne pourrait restaurer qu'un backup ancien, ce qui entraîne une perte partielle des données.
 
 **Exercice 2 :**  
 Expliquez nous pourquoi nous n'avons pas perdu les données lors de la supression du PVC pra-data  
   
-*..Répondez à cet exercice ici..*
+On n'a pas perdu les données parce qu'avant de supprimer le PVC pra-data, le CronJob faisait une copie de la base SQLite toutes les minutes dans un autre volume (pra-backup). Ces deux volumes sont complètement séparés, donc quand on a supprimé pra-data, les backups dans pra-backup étaient toujours là.
+Pour restaurer, on a juste lancé le job 50-job-restore.yaml qui a recopié le dernier backup dans le nouveau pra-data vide. C'est pour ça qu'on a retrouvé tous nos messages après le sinistre.
 
 **Exercice 3 :**  
 Quels sont les RTO et RPO de cette solution ?  
   
-*..Répondez à cet exercice ici..*
+RPO (Recovery Point Objective), RTO (Recovery Time Objective)
+  
+Le RPO de cette solution est d'environ 1 minute puisque le CronJob fait une sauvegarde toutes les minutes. Dans le pire des cas on perd donc 1 minute de données.
+Le RTO est d'environ 3 à 5 minutes, le temps de recréer le PVC avec kubectl apply -f k8s/, lancer le job de restauration et relancer le port-forward.
+Ces valeurs sont acceptables pour un atelier de test mais trop élevées pour un vrai environnement de production critique.
 
 **Exercice 4 :**  
 Pourquoi cette solution (cet atelier) ne peux pas être utilisé dans un vrai environnement de production ? Que manque-t-il ?   
   
-*..Répondez à cet exercice ici..*
+Cette solution a plusieurs limites qui la rendent inadaptée à la production :
+Les deux PVC (pra-data et pra-backup) sont sur le même cluster Kubernetes, voire sur la même machine physique. Si le serveur tombe en panne ou brûle, on perd tout, les données ET les backups en même temps.
+Les sauvegardes ne sont pas répliquées sur un site distant ou dans le cloud (pas de S3, pas d'Azure Blob, pas de GCS). Un vrai PRA exige que les backups soient géographiquement séparés de la production.
+La restauration est manuelle, il faut qu'un humain lance les commandes kubectl. En production on attend une restauration automatique ou au moins semi-automatique avec des alertes.
+Il n'y a pas de monitoring ni d'alertes. Si le CronJob échoue silencieusement pendant des heures, on ne le sait pas et on croit avoir des backups alors qu'il n'y en a pas.
+Enfin SQLite n'est pas adapté à un environnement de production multi-pods, il faudrait PostgreSQL ou MySQL avec réplication.
   
 **Exercice 5 :**  
 Proposez une archtecture plus robuste.   
   
-*..Répondez à cet exercice ici..*
+Pour une architecture plus robuste, voici ce que je proposerais :
+Remplacer SQLite par PostgreSQL avec un système de réplication (primary/replica). Les données sont ainsi dupliquées en temps réel sur plusieurs nœuds, si l'un tombe l'autre prend le relais automatiquement.
+Stocker les sauvegardes sur un stockage objet distant comme AWS S3, Google Cloud Storage ou Azure Blob Storage. Les backups seraient ainsi complètement séparés du cluster Kubernetes, dans une autre zone géographique.
+Mettre en place un cluster Kubernetes multi-nœuds sur plusieurs zones (multi-AZ) pour éviter qu'une panne d'un datacenter entier coupe le service.
+Ajouter un système de monitoring et d'alertes avec Prometheus et Grafana pour détecter immédiatement si un backup échoue ou si un pod est en erreur.
+Automatiser complètement la restauration avec un opérateur Kubernetes qui détecte le sinistre et déclenche la restauration sans intervention humaine, ce qui réduirait le RTO à quelques secondes.
 
 ---------------------------------------------------
 Séquence 6 : Ateliers  
